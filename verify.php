@@ -683,7 +683,7 @@ if (!empty($certData['partners'])) {
             </div>
             <div class="footer-bottom">
                 &copy; <?= date('Y') ?> <a href="https://dcwwiki.org/" target="_blank">Deoband Community Wikimedia</a>.
-                All Rights Reserved .
+                All Rights Reserved.
             </div>
         </div>
     </footer>
