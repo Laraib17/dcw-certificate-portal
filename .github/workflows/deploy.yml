@@ -1,4 +1,4 @@
-name: Deploy to Hostinger
+name: Deploy to DCW Production
 
 on:
   push:
@@ -29,7 +29,16 @@ jobs:
           
     - name: Install Composer Dependencies
       run: composer install --no-dev --optimize-autoloader --prefer-dist --no-progress
-    
+
+    - name: Copy missing TCPDF fonts (Alex Brush)
+      run: |
+        # Alex Brush precompiled font files are committed in resources/tcpdf_fonts/
+        # and need to be placed in the Composer TCPDF font directory before FTP sync.
+        cp resources/tcpdf_fonts/alexbrush.php vendor/tecnickcom/tcpdf/fonts/alexbrush.php
+        cp resources/tcpdf_fonts/alexbrush.z vendor/tecnickcom/tcpdf/fonts/alexbrush.z
+        cp resources/tcpdf_fonts/alexbrush.ctg.z vendor/tecnickcom/tcpdf/fonts/alexbrush.ctg.z
+        echo "Alex Brush fonts copied successfully."
+
     - name: Sync files via FTP
       uses: SamKirkland/FTP-Deploy-Action@v4.3.4
       with:
