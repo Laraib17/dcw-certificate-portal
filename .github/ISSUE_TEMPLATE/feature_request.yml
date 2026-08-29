@@ -1,0 +1,26 @@
+name: Feature or improvement
+description: Suggest an idea or enhancement for the certificate portal
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What problem are you running into, or what would you like to improve?
+      placeholder: "A clear description of the problem or enhancement idea..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution (Optional)
+      description: How would you like this to work?
+      placeholder: "Describe the desired solution or feature workflow..."
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Screenshots or Additional Context (Optional)
+      description: Add any mockups, screenshots, or extra context.

@@ -128,16 +128,26 @@ if (file_exists($templatePath)) {
         }
         $pdf->SetTextColor($r, $g, $b);
 
-        $posX = $settings['pos_x'];
-        $posY = $settings['pos_y'];
+        $posX = (float)$settings['pos_x'];
+        $posY = (float)$settings['pos_y'];
         $align = $settings['text_align'] ?? 'L';
         $boxWidth = isset($settings['box_width']) ? (float)$settings['box_width'] : 0;
+        $wrapMode = $settings['wrap_mode'] ?? 'wrap_words';
 
         if ($boxWidth > 0) {
+            if ($wrapMode === 'shrink') {
+                $strWidth = $pdf->GetStringWidth($text);
+                if ($strWidth > $boxWidth) {
+                    $minFontSize = max(7.5, (float)($settings['min_font_size'] ?? 8));
+                    $scaledFontSize = floor(($fontSize * ($boxWidth / $strWidth) * 0.97) * 10) / 10;
+                    $pdf->SetFont($fontName, '', max($minFontSize, $scaledFontSize));
+                }
+            }
+
             $pdf->SetXY($posX, $posY);
             $pdf->MultiCell($boxWidth, 0, $text, 0, $align, false, 1);
             if ($linkUrl !== '') {
-                $pdf->Link($posX, $posY, $boxWidth, $pdf->GetY() - $posY, $linkUrl);
+                $pdf->Link($posX, $posY, $boxWidth, max(5, $pdf->GetY() - $posY), $linkUrl);
             }
         } else {
             $strWidth = $pdf->GetStringWidth($text);
@@ -212,6 +222,8 @@ $linkedInAddUrl = "https://www.linkedin.com/profile/add?startTask=CERTIFICATION_
 $mail = new PHPMailer(true);
 
 try {
+    $mail->CharSet = 'UTF-8';
+    $mail->Encoding = 'base64';
     $mail->isSMTP();
     $mail->Host = $_ENV['SMTP_HOST'];
     $mail->SMTPAuth = filter_var($_ENV['SMTP_AUTH'], FILTER_VALIDATE_BOOLEAN);
@@ -220,10 +232,14 @@ try {
     $mail->SMTPSecure = $_ENV['SMTP_SECURE'];
     $mail->Port = $_ENV['SMTP_PORT'];
 
-    $mail->setFrom($_ENV['SMTP_USER'], 'Deoband Community Wikimedia');
+    $orgName = defined('ORG_NAME') && ORG_NAME !== '' ? ORG_NAME : __('site.name');
+    $orgUrl = defined('ORG_URL_HOME') ? ORG_URL_HOME : 'https://dcwwiki.org/';
+    $logoUrl = $protocol . $_SERVER['HTTP_HOST'] . $baseDir . '/assets/DCW_logo.png';
+
+    $mail->setFrom($_ENV['SMTP_USER'], $orgName);
     $mail->addAddress($recipientEmail, $fullName);
     $mail->isHTML(true);
-    $mail->Subject = "Verified Credential: " . $certData['event_name'];
+    $mail->Subject = __('email.certificate.subject', ['event' => $certData['event_name']]);
 
     // Attach PDF
     // sanitizeForFilename() is defined in config.php and shared with download.php
@@ -236,7 +252,7 @@ try {
     // Professional HTML Email Template Layout
     $mail->Body = '
     <!DOCTYPE html>
-    <html>
+    <html lang="' . htmlspecialchars(i18n_get_lang(), ENT_QUOTES | ENT_HTML5, 'UTF-8') . '" dir="' . i18n_get_dir() . '">
     <head>
         <meta charset="utf-8">
         <style>
@@ -259,32 +275,32 @@ try {
     <body>
         <div class="email-wrapper">
             <div class="email-header">
-                <img src="' . htmlspecialchars($protocol . $_SERVER['HTTP_HOST'] . $baseDir . '/assets/DCW_logo.png') . '" alt="Deoband Community Wikimedia Logo">
+                <img src="' . htmlspecialchars($logoUrl) . '" alt="' . htmlspecialchars($orgName) . ' Logo">
             </div>
             <div class="email-body">
-                <h1>Congratulations, ' . htmlspecialchars($fullName) . '!</h1>
-                <p>Your official certificate for <strong>' . htmlspecialchars($certData['event_name']) . '</strong> has been securely issued and archived. We have attached your certificate to this email.</p>
+                <h1>' . htmlspecialchars(__('email.certificate.heading', ['name' => $fullName])) . '</h1>
+                <p>' . htmlspecialchars(__('email.certificate.body', ['event' => $certData['event_name']])) . '</p>
                 
                 <div class="meta-box">
-                    <div class="meta-item"><strong>Credential ID:</strong> ' . htmlspecialchars($certId) . '</div>
-                    <div class="meta-item"><strong>Verification Status:</strong> Permanent Record Active</div>
+                    <div class="meta-item"><strong>' . htmlspecialchars(__('email.certificate.meta.id')) . '</strong> ' . htmlspecialchars($certId) . '</div>
+                    <div class="meta-item"><strong>' . htmlspecialchars(__('email.certificate.meta.status')) . '</strong> ' . htmlspecialchars(__('email.certificate.meta.status-value')) . '</div>
                 </div>
 
-                <p style="text-align: center; margin-bottom: 12px;"><strong>Share Your Achievement</strong></p>
-                <p style="text-align: center; margin-bottom: 24px; font-size: 14px;">Add this credential directly to your LinkedIn profile to showcase it to your network:</p>
+                <p style="text-align: center; margin-bottom: 12px;"><strong>' . htmlspecialchars(__('email.certificate.share.heading')) . '</strong></p>
+                <p style="text-align: center; margin-bottom: 24px; font-size: 14px;">' . htmlspecialchars(__('email.certificate.share.body')) . '</p>
                 
                 <div style="text-align: center;">
                     <a href="' . htmlspecialchars($linkedInAddUrl) . '" target="_blank" class="btn-linkedin">
-                        Add to LinkedIn Profile
+                        ' . htmlspecialchars(__('email.certificate.share.btn-linkedin')) . '
                     </a>
                 </div>
 
                 <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 32px 0;">
-                <p style="font-size: 13px; margin-bottom: 4px;"><strong>Direct Verification Record URL:</strong></p>
-                <a href="' . htmlspecialchars($verifyUrl) . '" class="verify-link" target="_blank">' . $verifyUrl . '</a>
+                <p style="font-size: 13px; margin-bottom: 4px;"><strong>' . htmlspecialchars(__('email.certificate.verify.heading')) . '</strong></p>
+                <a href="' . htmlspecialchars($verifyUrl) . '" class="verify-link" target="_blank">' . htmlspecialchars($verifyUrl) . '</a>
             </div>
             <div class="email-footer">
-                &copy; ' . date('Y') . ' <a href="https://dcwwiki.org/">Deoband Community Wikimedia</a>. All Rights Reserved.
+                ' . __('email.common.footer.copyright', ['year' => date('Y'), 'org' => '<a href="' . htmlspecialchars($orgUrl) . '">' . htmlspecialchars($orgName) . '</a>']) . '
             </div>
         </div>
     </body>
@@ -293,14 +309,14 @@ try {
     $mail->send();
     
     // Log success
-    $stmtLog = $pdo->prepare("INSERT INTO email_logs (certificate_id, recipient_email, status, error_message) VALUES (?, ?, 'Success', NULL)");
+    $stmtLog = $pdo->prepare("INSERT INTO email_logs (certificate_id, recipient_email, status, trigger_type, error_message) VALUES (?, ?, 'Success', 'download', NULL)");
     $stmtLog->execute([$certId, $recipientEmail]);
 
     echo json_encode(['success' => true, 'message' => 'Notification email fired successfully.']);
 } catch (Exception $e) {
     // Log failure
     $errorMsg = $mail->ErrorInfo;
-    $stmtLog = $pdo->prepare("INSERT INTO email_logs (certificate_id, recipient_email, status, error_message) VALUES (?, ?, 'Failed', ?)");
+    $stmtLog = $pdo->prepare("INSERT INTO email_logs (certificate_id, recipient_email, status, trigger_type, error_message) VALUES (?, ?, 'Failed', 'download', ?)");
     $stmtLog->execute([$certId, $recipientEmail, $errorMsg]);
 
     echo json_encode(['success' => false, 'message' => "Mail dispatch failed: {$errorMsg}"]);

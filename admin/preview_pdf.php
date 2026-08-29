@@ -59,8 +59,8 @@ $defaultSettings = [
     ],
     'custom_text' => [
         'enabled' => false,
-        'pos_x' => 100, 'pos_y' => 120, 'font_size' => 18, 'box_width' => 0,
-        'text_color' => '0,0,0', 'text_align' => 'C', 'font_file' => '', 'font_name' => 'helvetica'
+        'pos_x' => 100, 'pos_y' => 120, 'font_size' => 18, 'box_width' => 120,
+        'text_color' => '0,0,0', 'text_align' => 'L', 'font_file' => '', 'font_name' => 'helvetica'
     ]
 ];
 
@@ -194,12 +194,22 @@ function renderElement($pdf, $settings, $text) {
     }
     $pdf->SetTextColor($r, $g, $b);
 
-    $posX = $settings['pos_x'];
-    $posY = $settings['pos_y'];
+    $posX = (float)$settings['pos_x'];
+    $posY = (float)$settings['pos_y'];
     $align = $settings['text_align'] ?? 'L';
     $boxWidth = isset($settings['box_width']) ? (float)$settings['box_width'] : 0;
+    $wrapMode = $settings['wrap_mode'] ?? 'wrap_words';
 
     if ($boxWidth > 0) {
+        if ($wrapMode === 'shrink') {
+            $strWidth = $pdf->GetStringWidth($text);
+            if ($strWidth > $boxWidth) {
+                $minFontSize = max(7.5, (float)($settings['min_font_size'] ?? 8));
+                $scaledFontSize = floor(($fontSize * ($boxWidth / $strWidth) * 0.97) * 10) / 10;
+                $pdf->SetFont($fontName, '', max($minFontSize, $scaledFontSize));
+            }
+        }
+
         $pdf->SetXY($posX, $posY);
         $pdf->MultiCell($boxWidth, 0, $text, 0, $align, false, 1);
     } else {

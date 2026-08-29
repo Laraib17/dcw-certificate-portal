@@ -3,11 +3,16 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
-// Define explicit font path to avoid Linux path resolution bugs
-define('K_PATH_FONTS', __DIR__ . '/vendor/tecnickcom/tcpdf/fonts/');
+if (!defined('K_PATH_FONTS')) {
+    define('K_PATH_FONTS', __DIR__ . '/vendor/tecnickcom/tcpdf/fonts/');
+}
+
+if (defined('TEST_RUNNING')) {
+    return;
+}
 
 if (!isset($_GET['id'])) {
-    die("Certificate ID is required.");
+    die(__('page.download.error.invalid-id'));
 }
 
 $certId = trim($_GET['id']);
@@ -32,7 +37,7 @@ $stmt->execute([$certId]);
 $certData = $stmt->fetch();
 
 if (!$certData) {
-    die("Invalid Certificate ID.");
+    die(__('page.download.error.not-found'));
 }
 
 $fullName = $certData['full_name'];
@@ -64,7 +69,7 @@ $pdf->setCellPaddings(0, 0, 0, 0);
 // Load Template to determine size
 $templatePath = __DIR__ . '/uploads/templates/' . $certData['template_file'];
 if (!file_exists($templatePath)) {
-    die("Template file missing.");
+    die(__('page.download.error.no-template'));
 }
 $pdf->setSourceFile($templatePath);
 $tplIdx = $pdf->importPage(1);
@@ -148,16 +153,27 @@ function renderElement($pdf, $settings, $text, $linkUrl = '') {
     }
     $pdf->SetTextColor($r, $g, $b);
 
-    $posX = $settings['pos_x'];
-    $posY = $settings['pos_y'];
+    $posX = (float)$settings['pos_x'];
+    $posY = (float)$settings['pos_y'];
     $align = $settings['text_align'] ?? 'L';
     $boxWidth = isset($settings['box_width']) ? (float)$settings['box_width'] : 0;
+    $wrapMode = $settings['wrap_mode'] ?? 'wrap_words';
 
     if ($boxWidth > 0) {
+        // Only scale font size down if explicitly set to 'shrink' mode
+        if ($wrapMode === 'shrink') {
+            $strWidth = $pdf->GetStringWidth($text);
+            if ($strWidth > $boxWidth) {
+                $minFontSize = max(7.5, (float)($settings['min_font_size'] ?? 8));
+                $scaledFontSize = floor(($fontSize * ($boxWidth / $strWidth) * 0.97) * 10) / 10;
+                $pdf->SetFont($fontName, '', max($minFontSize, $scaledFontSize));
+            }
+        }
+
         $pdf->SetXY($posX, $posY);
         $pdf->MultiCell($boxWidth, 0, $text, 0, $align, false, 1);
         if ($linkUrl !== '') {
-            $pdf->Link($posX, $posY, $boxWidth, $pdf->GetY() - $posY, $linkUrl);
+            $pdf->Link($posX, $posY, $boxWidth, max(5, $pdf->GetY() - $posY), $linkUrl);
         }
     } else {
         $strWidth = $pdf->GetStringWidth($text);

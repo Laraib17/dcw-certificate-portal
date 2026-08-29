@@ -4,26 +4,56 @@
 CREATE TABLE IF NOT EXISTS admin_users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL
+    password_hash VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NULL,
+    reset_token_hash VARCHAR(255) NULL,
+    reset_expires_at DATETIME NULL
 );
 
--- Insert Default Admin (username: Zaidusyy, password: password123)
-INSERT INTO admin_users (username, password_hash) 
-VALUES ('Zaidusyy', '$2y$10$p0Bv6TvSUHEQ6X86NOFaQ.LcuBV8EmkkZhGx51GPUJRx8huMP.GFW')
+-- Migration for existing installs:
+-- ALTER TABLE admin_users ADD COLUMN email VARCHAR(255) NULL;
+-- ALTER TABLE admin_users ADD COLUMN reset_token_hash VARCHAR(255) NULL;
+-- ALTER TABLE admin_users ADD COLUMN reset_expires_at DATETIME NULL;
+
+-- Insert Default Admin (username: admin, password: password123)
+-- This account exists only so a new operator can log in the first time.
+-- Change the password from "Manage Users" before the portal is reachable
+-- from the internet. See the Quick Start Guide in README.md.
+INSERT INTO admin_users (username, password_hash)
+VALUES ('admin', '$2y$10$p0Bv6TvSUHEQ6X86NOFaQ.LcuBV8EmkkZhGx51GPUJRx8huMP.GFW')
 ON DUPLICATE KEY UPDATE id=id;
 
 -- Create Events Table
 CREATE TABLE IF NOT EXISTS events (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
+    category VARCHAR(50) NULL,
     linkedin_caption TEXT NULL,
     custom_verification_text TEXT NULL,
     cert_prefix VARCHAR(50) DEFAULT 'DCW',
     certificate_issue_date DATE NULL,
+    completion_date DATE NULL,
     description TEXT NULL,
     partners VARCHAR(255) NULL,
+    color_presets TEXT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- completion_date is the date the participants actually finished the event
+-- (e.g. a course or internship). It is deliberately separate from
+-- certificate_issue_date (when the credential was issued) and created_at (when
+-- the event row was added), which are unrelated to completion. Leave it NULL
+-- for events where a completion date has no meaning (conferences, editathons).
+
+-- color_presets stores a small JSON array of "#RRGGBB" strings (issue #90): custom
+-- brand colors an organiser saves in the visual editor so certificate elements can
+-- reuse the template's palette. Read/written defensively, so an install that hasn't
+-- run the migration below simply shows no custom presets rather than erroring.
+
+-- Migration for existing installs (run once; on MariaDB you may add IF NOT EXISTS after ADD COLUMN):
+-- ALTER TABLE events ADD COLUMN category VARCHAR(50) NULL AFTER name;
+-- ALTER TABLE events ADD COLUMN completion_date DATE NULL AFTER certificate_issue_date;
+-- ALTER TABLE events ADD COLUMN color_presets TEXT NULL AFTER partners;
 
 -- Create Event Roles Table
 CREATE TABLE IF NOT EXISTS event_roles (
@@ -78,9 +108,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 -- Create Email Logs Table
 CREATE TABLE IF NOT EXISTS email_logs (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    certificate_id VARCHAR(50) NOT NULL,
+    certificate_id VARCHAR(50) NULL,
     recipient_email VARCHAR(255) NOT NULL,
     status VARCHAR(20) NOT NULL,
+    -- Which flow produced this row: 'notification', 'download', or 'password_reset'.
+    -- On an existing install that predates NULLable certificate_id or trigger_type:
+    --   ALTER TABLE email_logs MODIFY COLUMN certificate_id VARCHAR(50) NULL;
+    --   ALTER TABLE email_logs ADD COLUMN trigger_type VARCHAR(20) NOT NULL DEFAULT 'download' AFTER status;
+    trigger_type VARCHAR(20) NOT NULL DEFAULT 'download',
     error_message TEXT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (certificate_id) REFERENCES event_participants(certificate_id) ON DELETE CASCADE

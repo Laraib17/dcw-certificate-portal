@@ -29,6 +29,35 @@ if (!$role) {
     die("Role not found");
 }
 
+// Auto-extracted color palette from the uploaded template (issue #90). Re-read fresh on
+// every load rather than persisted, so it always reflects the current template file.
+$extractedPalette = [];
+$templatePath = '../uploads/templates/' . $role['template_file'];
+if (is_file($templatePath)) {
+    $extractedPalette = extractPdfColorPalette($templatePath);
+}
+
+// Custom brand color presets are saved per-event (issue #90). Read defensively so an
+// install that hasn't yet added the events.color_presets column still loads the editor.
+$colorPresets = [];
+try {
+    $cpStmt = $pdo->prepare("SELECT color_presets FROM events WHERE id = ?");
+    $cpStmt->execute([$role['event_id']]);
+    $cpVal = $cpStmt->fetchColumn();
+    if (!empty($cpVal)) {
+        $decoded = json_decode($cpVal, true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $hex) {
+                if (is_string($hex) && preg_match('/^#[0-9a-fA-F]{6}$/', $hex)) {
+                    $colorPresets[] = strtoupper($hex);
+                }
+            }
+        }
+    }
+} catch (PDOException $e) {
+    $colorPresets = []; // column not present yet — feature is simply inactive
+}
+
 $defaultSettings = [
     'name' => [
         'enabled' => true,
@@ -53,8 +82,8 @@ $defaultSettings = [
     ],
     'custom_text' => [
         'enabled' => false,
-        'pos_x' => 100, 'pos_y' => 120, 'font_size' => 18, 'box_width' => 0,
-        'text_color' => '0,0,0', 'text_align' => 'C', 'font_file' => '', 'font_name' => 'helvetica'
+        'pos_x' => 100, 'pos_y' => 120, 'font_size' => 18, 'box_width' => 120,
+        'text_color' => '0,0,0', 'text_align' => 'L', 'font_file' => '', 'font_name' => 'helvetica'
     ]
 ];
 
@@ -68,21 +97,6 @@ foreach (['name', 'certid', 'date', 'qrcode', 'custom_text'] as $key) {
     if ($key !== 'qrcode' && !isset($visualSettings[$key]['box_width'])) {
         $visualSettings[$key]['box_width'] = 0;
     }
-}
-
-function getUniqueFilename($dir, $filename) {
-    $filename = preg_replace('/[^a-zA-Z0-9_\.-]/', '_', $filename);
-    $info = pathinfo($filename);
-    $name = $info['filename'];
-    $ext = isset($info['extension']) ? '.' . $info['extension'] : '';
-
-    $counter = 1;
-    $newFilename = $filename;
-    while (file_exists($dir . $newFilename)) {
-        $newFilename = $name . '(' . $counter . ')' . $ext;
-        $counter++;
-    }
-    return $newFilename;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -110,6 +124,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $jsonStr = json_encode($payload);
     $stmt = $pdo->prepare("UPDATE event_roles SET visual_settings = ?, rotation = ? WHERE id = ?");
     $stmt->execute([$jsonStr, $_POST['rotation'] ?? 0, $roleId]);
+
+    // Persist custom brand color presets per-event (issue #90). Validate to a clean list
+    // of #RRGGBB strings and save defensively so a missing column never breaks the save.
+    $presetsRaw = json_decode($_POST['color_presets_payload'] ?? '[]', true);
+    $cleanPresets = [];
+    if (is_array($presetsRaw)) {
+        foreach ($presetsRaw as $hex) {
+            if (is_string($hex) && preg_match('/^#[0-9a-fA-F]{6}$/', $hex)) {
+                $cleanPresets[] = strtoupper($hex);
+            }
+        }
+    }
+    $cleanPresets = array_slice(array_values(array_unique($cleanPresets)), 0, 12);
+    try {
+        $cpSave = $pdo->prepare("UPDATE events SET color_presets = ? WHERE id = ?");
+        $cpSave->execute([json_encode($cleanPresets), $role['event_id']]);
+    } catch (PDOException $e) {
+        // column not migrated yet — presets simply not saved
+    }
 
     header("Location: preview_event.php?role_id=" . $roleId);
     exit;
@@ -184,12 +217,76 @@ if (is_dir($fontDir)) {
         .handle-tr { top: -4px; right: -4px; cursor: nesw-resize; }
         .handle-bl { bottom: -4px; left: -4px; cursor: nesw-resize; }
         .handle-br { bottom: -4px; right: -4px; cursor: nwse-resize; }
+        .handle-mr {
+            top: 50%;
+            right: -6px;
+            transform: translateY(-50%);
+            width: 10px;
+            height: 20px;
+            border-radius: 3px;
+            background: #2563eb;
+            border: 1.5px solid white;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            cursor: ew-resize !important;
+            pointer-events: auto !important;
+            z-index: 25;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .handle-mr::after {
+            content: '';
+            display: block;
+            width: 2px;
+            height: 8px;
+            background: rgba(255,255,255,0.9);
+            border-radius: 1px;
+        }
+        .handle-mr:hover {
+            background: #1d4ed8;
+            transform: translateY(-50%) scale(1.15);
+        }
         
         #selection-frame.locked {
             border-color: #ef4444;
         }
         #selection-frame.locked .selection-handle {
             border-color: #ef4444;
+        }
+        #selection-frame.locked .handle-mr {
+            display: none !important;
+        }
+
+        .variant-chip {
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #475569;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .variant-chip:hover {
+            background: #e2e8f0;
+            color: #0f172a;
+            border-color: #94a3b8;
+        }
+        .width-preset-btn {
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-radius: 3px;
+            padding: 2px 6px;
+            font-size: 10px;
+            font-weight: 500;
+            color: #475569;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .width-preset-btn:hover {
+            background: #e2e8f0;
+            color: #1e293b;
         }
         
         #selection-lock-badge {
@@ -301,7 +398,8 @@ if (is_dir($fontDir)) {
             transform: scale(1.2);
         }
         /* Custom cross-platform colour picker (issue #92) */
-        #custom_color_ui { margin-top: 10px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; }
+        #custom_color_ui { display: none; margin-top: 8px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; }
+        #custom_color_ui.open { display: block; }
         #custom_color_ui .cc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
         #color_preview { width: 28px; height: 28px; border-radius: 5px; border: 1px solid #cbd5e1; background: #000; flex: 0 0 auto; }
         #color_hex_readout { font-size: 12px; font-family: monospace; color: #334155; }
@@ -311,11 +409,122 @@ if (is_dir($fontDir)) {
         #custom_color_ui .cc-row span { width: 38px; font-size: 11px; color: #475569; flex: 0 0 auto; }
         #custom_color_ui .cc-row input[type="range"] { flex: 1; height: 22px; accent-color: #106b9a; cursor: pointer; }
 
+        /* Custom Color Collapsible Toggle (issue #118) */
+        .custom-color-toggle-btn {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 10px;
+            margin-top: 8px;
+            background: #f8fafc;
+            border: 1px dashed #cbd5e1;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #475569;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .custom-color-toggle-btn:hover {
+            background: #f1f5f9;
+            border-color: #94a3b8;
+            color: #0f172a;
+        }
+
+        /* Inspector Tabs (issue #118) */
+        .inspector-tabs {
+            display: flex;
+            background: #f1f5f9;
+            padding: 4px;
+            border-radius: 8px;
+            gap: 4px;
+            margin-bottom: 15px;
+            border: 1px solid #e2e8f0;
+        }
+        .inspector-tab-btn {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 7px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #64748b;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .inspector-tab-btn:hover {
+            color: #1e293b;
+            background: rgba(255, 255, 255, 0.6);
+        }
+        .inspector-tab-btn.active {
+            color: #0f172a;
+            background: #ffffff;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        }
+        .inspector-tab-content {
+            display: none;
+        }
+        .inspector-tab-content.active {
+            display: block;
+        }
+
         /* Locked layer state */
         .element-box.locked {
             cursor: not-allowed !important;
         }
         /* ===== END OF INSERTION 1 ===== */
+        /* Sticky canvas & independent sidebar scroll (issue #118) */
+        @media (min-width: 901px) {
+            .container {
+                display: flex;
+                max-width: 1440px;
+                gap: 20px;
+                align-items: flex-start;
+                padding: 12px;
+                box-sizing: border-box;
+            }
+            .editor-wrapper {
+                position: sticky;
+                top: 15px;
+                max-height: calc(100vh - 85px);
+                display: flex;
+                flex-direction: column;
+                flex: 1;
+                min-width: 0;
+            }
+            .controls {
+                width: 380px;
+                flex-shrink: 0;
+                max-height: calc(100vh - 85px);
+                overflow-y: auto;
+                overflow-x: hidden;
+                scrollbar-width: thin;
+                scrollbar-color: #cbd5e1 #f8fafc;
+                border-radius: 10px;
+                background: #ffffff;
+                border: 1.5px solid #cbd5e1;
+                padding: 16px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+                box-sizing: border-box;
+            }
+            .controls::-webkit-scrollbar {
+                width: 6px;
+            }
+            .controls::-webkit-scrollbar-track {
+                background: #f8fafc;
+                border-radius: 4px;
+            }
+            .controls::-webkit-scrollbar-thumb {
+                background: #cbd5e1;
+                border-radius: 4px;
+            }
+        }
         /* Mobile responsiveness for editor */
         @media (max-width: 900px) {
             .container { flex-direction: column; }
@@ -390,6 +599,7 @@ if (is_dir($fontDir)) {
                         <div class="selection-handle handle-tr"></div>
                         <div class="selection-handle handle-bl"></div>
                         <div class="selection-handle handle-br"></div>
+                        <div class="selection-handle handle-mr" id="handle_resize_r" title="Drag to adjust max width (text wrapping)"></div>
                         <div id="selection-lock-badge">Locked</div>
                     </div>
                     
@@ -417,164 +627,221 @@ if (is_dir($fontDir)) {
                 </div>
             </div>
             </div>
-        </div>
-
-        <div class="controls">
-            <!-- ===== START OF INSERTION 3: GRID TOGGLE UI ===== -->
-            <div style="margin-bottom: 20px; padding: 12px; background: #eaedf1; border-radius: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 15px;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <input type="checkbox" id="toggle_grid" style="width: auto; height: 18px; cursor: pointer;"> 
-                    <label for="toggle_grid" style="margin-bottom: 0; font-weight: bold; cursor: pointer;">Show Grid</label>
-                </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <label for="snap_interval" style="margin-bottom: 0; font-weight: bold;">Snap:</label>
-                    <select id="snap_interval" style="width: auto; padding: 4px; font-weight: bold; border-radius: 4px; background: white; border: 1.5px solid #cbd5e1; height: auto; cursor: pointer;">
-                        <option value="0">None</option>
-                        <option value="0.1">0.1mm</option>
-                        <option value="0.5">0.5mm</option>
-                        <option value="1">1mm</option>
-                        <option value="2">2mm</option>
-                        <option value="5" selected>5mm</option>
-                        <option value="10">10mm</option>
-                        <option value="custom">Custom...</option>
-                    </select>
-                    <input type="number" id="snap_custom_val" step="0.1" min="0.05" value="0.5" style="display: none; width: 65px; padding: 4px; border-radius: 4px; border: 1.5px solid #cbd5e1; font-weight: bold; background: white;">
-                </div>
-            </div>
-            <!-- ===== END OF INSERTION 3 ===== -->
-            <!-- ===== FIGMA LAYERS PANEL ===== -->
-            <div style="margin-bottom: 20px; background: white; border: 1.5px solid #cbd5e1; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <div style="background: #f8fafc; padding: 10px 12px; font-weight: 700; font-size: 13px; color: #334155; border-bottom: 1.5px solid #cbd5e1; display: flex; justify-content: space-between; align-items: center; user-select: none;">
-                    <span style="display: flex; align-items: center; gap: 6px;">
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="color: #64748b;"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg>
-                        Layers Panel
-                    </span>
-                    <span style="font-size: 10px; padding: 2px 6px; background: #e2e8f0; border-radius: 4px; color: #475569; font-weight: 600;">Interactive</span>
-                </div>
-                <div id="layers_list" style="display: flex; flex-direction: column;">
-                    <!-- Dynamically populated via JS -->
-                </div>
+        </div>        <div class="controls">
+            <!-- Inspector Tabs (issue #118): Keep properties clean & compact -->
+            <div class="inspector-tabs" role="tablist">
+                <button type="button" class="inspector-tab-btn active" data-tab="properties" role="tab" aria-selected="true" aria-controls="inspector_tab_properties">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                    <?= __e('admin.editor.tab.properties') ?>
+                </button>
+                <button type="button" class="inspector-tab-btn" data-tab="layers" role="tab" aria-selected="false" aria-controls="inspector_tab_layers">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg>
+                    <?= __e('admin.editor.tab.layers') ?>
+                </button>
             </div>
 
             <form id="settings-form" method="POST" action="" enctype="multipart/form-data">
                 <input type="hidden" id="visual_settings_payload" name="visual_settings_payload">
                 <input type="hidden" id="rotation" name="rotation" value="<?= htmlspecialchars($role['rotation'] ?? 0) ?>">
 
-                <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" id="field_enabled" style="width: auto; height: 18px;">
-                    <label for="field_enabled" style="margin-bottom: 0;">Show this element on PDF</label>
-                </div>
+                <!-- TAB 1: Element Properties -->
+                <div id="inspector_tab_properties" class="inspector-tab-content active">
+                    <div class="form-group" style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+                        <input type="checkbox" id="field_enabled" style="width: auto; height: 18px;">
+                        <label for="field_enabled" style="margin-bottom: 0; font-weight: 600; color: #1e293b;">Show this element on PDF</label>
+                    </div>
 
-                <div class="form-group" id="sample_text_group" style="display: none; padding-top: 10px; border-top: 1px solid #eaedf1;">
-                    <label>Preview Sample Text <span style="font-size: 11px; font-weight: normal; color: #777;">(Not saved, for testing only)</span></label>
-                    <input type="text" id="sample_text_input" placeholder="Type to preview length..." style="width: 100%; padding: 10px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; font-family: monospace;">
-                </div>
+                    <div class="form-group" id="sample_text_group" style="display: none; padding-top: 8px; border-top: 1px solid #eaedf1; margin-bottom: 12px;">
+                        <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Preview Sample Text <span style="font-size: 10px; font-weight: normal; color: #94a3b8;">(Test only)</span></label>
+                        <input type="text" id="sample_text_input" placeholder="Type to preview length..." style="width: 100%; padding: 8px 10px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; font-family: monospace; font-size: 12px;">
+                        <div id="sample_text_chips" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;"></div>
+                    </div>
 
-                <!-- Coordinates Group (Horizontal Row) -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label style="font-weight: bold; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">X Position (mm)</label>
-                        <input type="number" id="pos_x" step="0.01" style="width: 100%; padding: 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
-                    </div>
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label style="font-weight: bold; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Y Position (mm)</label>
-                        <input type="number" id="pos_y" step="0.01" style="width: 100%; padding: 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
-                    </div>
-                </div>
-
-                <!-- Size & Box Width Group (Horizontal Row) -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label style="font-weight: bold; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Size (pt / mm)</label>
-                        <input type="number" id="font_size" style="width: 100%; padding: 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
-                    </div>
-                    <div class="form-group" id="group_box_width" style="margin-bottom: 0;">
-                        <label style="font-weight: bold; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Max Width (mm)</label>
-                        <input type="number" id="box_width" step="1" style="width: 100%; padding: 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
-                    </div>
-                </div>
-
-                <div class="form-group" id="group_color">
-                    <label>Text Color (HEX/RGB)</label>
-                    <div style="display: flex; gap: 5px;">
-                        <input type="color" id="color_picker" style="width: 50px; padding: 2px; cursor: pointer; height: 35px;">
-                        <input type="text" id="text_color" placeholder="e.g. 0,0,0">
-                    </div>
-                    <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
-                        <span style="font-size: 11px; color: #64748b;">Presets:</span>
-                        <div style="display: flex; gap: 6px;" id="color_swatches">
-                            <div class="swatch" data-color="#000000" style="background: #000000;" title="Black"></div>
-                            <div class="swatch" data-color="#106b9a" style="background: #106b9a;" title="DCW Blue"></div>
-                            <div class="swatch" data-color="#d4af37" style="background: #d4af37;" title="Gold"></div>
-                            <div class="swatch" data-color="#334155" style="background: #334155;" title="Charcoal"></div>
-                            <div class="swatch" data-color="#b91c1c" style="background: #b91c1c;" title="Red"></div>
+                    <!-- Coordinates Group (Horizontal Row) -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">X Position (mm)</label>
+                            <input type="number" id="pos_x" step="0.01" style="width: 100%; padding: 7px 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Y Position (mm)</label>
+                            <input type="number" id="pos_y" step="0.01" style="width: 100%; padding: 7px 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
                         </div>
                     </div>
-                    <!-- Custom cross-platform picker (issue #92): the native <input type=color> falls
-                         back to a limited OS swatch list on mobile/tablet. These touch-friendly HSL
-                         sliders + eyedropper give the same fine control everywhere and write the
-                         canonical "r,g,b" value. -->
-                    <div id="custom_color_ui">
-                        <div class="cc-head">
-                            <div id="color_preview" title="Current colour"></div>
-                            <span id="color_hex_readout">#000000</span>
-                            <button type="button" id="eyedropper_btn" title="Pick a colour from anywhere on screen">&#128269; Eyedropper</button>
+
+                    <!-- Size & Box Width Group (Horizontal Row) -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Size (pt / mm)</label>
+                            <input type="number" id="font_size" style="width: 100%; padding: 7px 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
                         </div>
-                        <label class="cc-row"><span>Hue</span><input type="range" id="cc_hue" min="0" max="360" step="1" value="0"></label>
-                        <label class="cc-row"><span>Sat</span><input type="range" id="cc_sat" min="0" max="100" step="1" value="0"></label>
-                        <label class="cc-row"><span>Light</span><input type="range" id="cc_light" min="0" max="100" step="1" value="0"></label>
+                        <div class="form-group" id="group_box_width" style="margin-bottom: 0;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <label style="font-weight: 600; font-size: 11px; color: #475569; margin-bottom: 0;">Max Width (mm)</label>
+                                <span style="font-size: 10px; color: #64748b;" id="box_width_mode_badge">0 = Auto</span>
+                            </div>
+                            <input type="number" id="box_width" step="1" min="0" placeholder="0 (Auto)" style="width: 100%; padding: 7px 8px; box-sizing: border-box; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px;">
+                            <div style="display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px;">
+                                <button type="button" class="width-preset-btn" data-width="0">Auto</button>
+                                <button type="button" class="width-preset-btn" data-width="80">80</button>
+                                <button type="button" class="width-preset-btn" data-width="120">120</button>
+                                <button type="button" class="width-preset-btn" data-width="160">160</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Text Color Group -->
+                    <div class="form-group" id="group_color" style="margin-bottom: 12px;">
+                        <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Text Color (HEX/RGB)</label>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <input type="color" id="color_picker" style="width: 44px; height: 32px; padding: 1px; cursor: pointer; border-radius: 4px; border: 1px solid #cbd5e1;">
+                            <input type="text" id="text_color" placeholder="e.g. 0,0,0" style="flex: 1; padding: 7px 8px; font-size: 12px; font-family: monospace; border: 1.5px solid #cbd5e1; border-radius: 6px;">
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
+                            <span style="font-size: 11px; color: #64748b;">Presets:</span>
+                            <div style="display: flex; gap: 6px;" id="color_swatches">
+                                <div class="swatch" data-color="#000000" style="background: #000000;" title="Black"></div>
+                                <div class="swatch" data-color="#106b9a" style="background: #106b9a;" title="DCW Blue"></div>
+                                <div class="swatch" data-color="#d4af37" style="background: #d4af37;" title="Gold"></div>
+                                <div class="swatch" data-color="#334155" style="background: #334155;" title="Charcoal"></div>
+                                <div class="swatch" data-color="#b91c1c" style="background: #b91c1c;" title="Red"></div>
+                            </div>
+                        </div>
+                        <?php if (!empty($extractedPalette)): ?>
+                        <!-- Auto-extracted from the uploaded template (issue #90) -->
+                        <div style="display: flex; gap: 8px; margin-top: 6px; align-items: center; flex-wrap: wrap;">
+                            <span style="font-size: 11px; color: #64748b;"><?= __e('admin.editor.color.extracted-label') ?></span>
+                            <div style="display: flex; gap: 6px;" id="extracted_swatches">
+                                <?php foreach ($extractedPalette as $hex): ?>
+                                    <div class="swatch" data-color="<?= htmlspecialchars($hex) ?>" style="background: <?= htmlspecialchars($hex) ?>;" title="<?= htmlspecialchars($hex) ?> — <?= __e('admin.editor.color.extracted-title') ?>"></div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                        <!-- Custom brand presets (issue #90) -->
+                        <div style="display: flex; gap: 8px; margin-top: 6px; align-items: center; flex-wrap: wrap;">
+                            <span style="font-size: 11px; color: #64748b;"><?= __e('admin.editor.color.brand-label') ?></span>
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap;" id="custom_swatches"></div>
+                            <button type="button" id="add_preset_btn" title="<?= __e('admin.editor.color.save-current-title') ?>"
+                                style="font-size: 10px; padding: 2px 6px; border: 1px dashed #cbd5e1; border-radius: 4px; background: #fff; cursor: pointer; color: #475569;"><?= __e('admin.editor.color.save-current') ?></button>
+                        </div>
+                        <div style="font-size: 10px; color: #94a3b8; margin-top: 3px;"><?= __e('admin.editor.color.brand-hint') ?></div>
+                        <input type="hidden" id="color_presets_payload" name="color_presets_payload">
+                        
+                        <!-- Collapsible trigger for custom HSL picker & Eyedropper (issue #118) -->
+                        <button type="button" id="toggle_custom_color_btn" class="custom-color-toggle-btn">
+                            <span style="display: flex; align-items: center; gap: 6px;">
+                                <span id="color_swatch_indicator" style="width: 12px; height: 12px; border-radius: 3px; border: 1px solid #cbd5e1; display: inline-block; background: #000;"></span>
+                                <?= __e('admin.editor.color.custom-toggle') ?>
+                            </span>
+                            <span id="custom_color_arrow" style="font-size: 10px; color: #64748b;">▾</span>
+                        </button>
+
+                        <div id="custom_color_ui">
+                            <div class="cc-head">
+                                <div id="color_preview" title="Current colour"></div>
+                                <span id="color_hex_readout">#000000</span>
+                                <button type="button" id="eyedropper_btn" title="Pick a colour from anywhere on screen">&#128269; Eyedropper</button>
+                            </div>
+                            <label class="cc-row"><span>Hue</span><input type="range" id="cc_hue" min="0" max="360" step="1" value="0"></label>
+                            <label class="cc-row"><span>Sat</span><input type="range" id="cc_sat" min="0" max="100" step="1" value="0"></label>
+                            <label class="cc-row"><span>Light</span><input type="range" id="cc_light" min="0" max="100" step="1" value="0"></label>
+                        </div>
+                    </div>
+
+                    <!-- Alignment -->
+                    <div class="form-group" id="group_align" style="margin-bottom: 12px;">
+                        <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Text Alignment</label>
+                        <div class="segmented-control">
+                            <button type="button" class="segment-btn active" data-align="L" title="Align Left">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="17" y1="18" x2="3" y2="18"></line></svg>
+                            </button>
+                            <button type="button" class="segment-btn" data-align="C" title="Align Center">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="10" x2="6" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="18" y1="18" x2="6" y2="18"></line></svg>
+                            </button>
+                            <button type="button" class="segment-btn" data-align="R" title="Align Right">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="7" y2="18"></line></svg>
+                            </button>
+                        </div>
+                        <input type="hidden" id="text_align" value="L">
+                    </div>
+
+                    <!-- Font Family -->
+                    <div class="form-group" id="group_font" style="margin-bottom: 12px;">
+                        <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Font Family</label>
+                        <select id="existing_font" style="width: 100%; padding: 7px 8px; font-size: 12px; border: 1.5px solid #cbd5e1; border-radius: 6px;">
+                            <option value="">Default Font</option>
+                            <?php foreach ($ttfFiles as $fName): ?>
+                                <option value="<?= htmlspecialchars($fName) ?>"><?= htmlspecialchars($fName) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <!-- Upload Custom Font -->
+                    <div class="form-group" id="font_upload_group" style="margin-bottom: 12px;">
+                        <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Upload Custom Font (.ttf)</label>
+                        <input type="file" id="font_file_input" accept=".ttf" style="width: 100%; font-size: 12px;">
+                        <div style="font-size: 10px; color: #64748b; margin-top: 2px;">For <span id="lbl_current_tab">Name</span></div>
+                    </div>
+
+                    <!-- Date Format -->
+                    <div class="form-group" id="date_format_group" style="display: none; margin-bottom: 12px;">
+                        <label style="font-weight: 600; font-size: 11px; margin-bottom: 4px; color: #475569; display: block;">Date Format</label>
+                        <select id="date_format" style="width: 100%; padding: 7px 8px; font-size: 12px; border: 1.5px solid #cbd5e1; border-radius: 6px;">
+                            <option value="F j, Y">June 14, 2026 (F j, Y)</option>
+                            <option value="Y-m-d">2026-06-14 (Y-m-d)</option>
+                            <option value="d/m/Y">14/06/2026 (d/m/Y)</option>
+                            <option value="m/d/Y">06/14/2026 (m/d/Y)</option>
+                            <option value="j F Y">14 June 2026 (j F Y)</option>
+                        </select>
+                    </div>
+
+                    <!-- Quick Actions Center/Align Buttons -->
+                    <div class="form-group" style="padding-top: 10px; border-top: 1px solid #eaedf1; margin-bottom: 12px;">
+                        <label style="font-weight: 600; font-size: 11px; margin-bottom: 6px; color: #475569; display: block;">Quick Actions</label>
+                        <div style="display: flex; gap: 8px;">
+                            <button type="button" id="btn_center_x" class="btn btn-sm" style="flex: 1; padding: 7px 8px; font-size: 11px; font-weight: 600; text-align: center;">Center Horizontally</button>
+                            <button type="button" id="btn_center_y" class="btn btn-sm" style="flex: 1; padding: 7px 8px; font-size: 11px; font-weight: 600; text-align: center;">Center Vertically</button>
+                        </div>
                     </div>
                 </div>
 
-                <div class="form-group" id="group_align">
-                    <label>Text Alignment</label>
-                    <div class="segmented-control">
-                        <button type="button" class="segment-btn active" data-align="L" title="Align Left">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="17" y1="18" x2="3" y2="18"></line></svg>
-                        </button>
-                        <button type="button" class="segment-btn" data-align="C" title="Align Center">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="10" x2="6" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="18" y1="18" x2="6" y2="18"></line></svg>
-                        </button>
-                        <button type="button" class="segment-btn" data-align="R" title="Align Right">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="21" y1="10" x2="7" y2="10"></line><line x1="21" y1="6" x2="3" y2="6"></line><line x1="21" y1="14" x2="3" y2="14"></line><line x1="21" y1="18" x2="7" y2="18"></line></svg>
-                        </button>
+                <!-- TAB 2: Layers & Canvas Grid -->
+                <div id="inspector_tab_layers" class="inspector-tab-content">
+                    <!-- Figma Layers Panel -->
+                    <div style="margin-bottom: 16px; background: white; border: 1.5px solid #cbd5e1; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <div style="background: #f8fafc; padding: 8px 12px; font-weight: 700; font-size: 12px; color: #334155; border-bottom: 1.5px solid #cbd5e1; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                            <span style="display: flex; align-items: center; gap: 6px;">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color: #64748b;"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg>
+                                Layers Panel
+                            </span>
+                            <span style="font-size: 10px; padding: 2px 6px; background: #e2e8f0; border-radius: 4px; color: #475569; font-weight: 600;">Interactive</span>
+                        </div>
+                        <div id="layers_list" style="display: flex; flex-direction: column;">
+                            <!-- Dynamically populated via JS -->
+                        </div>
                     </div>
-                    <input type="hidden" id="text_align" value="L">
-                </div>
 
-                <div class="form-group" id="group_font">
-                    <label>Font Family</label>
-                    <select id="existing_font">
-                        <option value="">Default Font</option>
-                        <?php foreach ($ttfFiles as $fName): ?>
-                            <option value="<?= htmlspecialchars($fName) ?>"><?= htmlspecialchars($fName) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="form-group" id="font_upload_group">
-                    <label>Upload Custom Font (.ttf)</label>
-                    <input type="file" id="font_file_input" accept=".ttf">
-                    <div style="font-size: 11px; color: #777; margin-top: 4px;">For <span id="lbl_current_tab">Name</span></div>
-                </div>
-
-                <div class="form-group" id="date_format_group" style="display: none;">
-                    <label>Date Format</label>
-                    <select id="date_format">
-                        <option value="F j, Y">June 14, 2026 (F j, Y)</option>
-                        <option value="Y-m-d">2026-06-14 (Y-m-d)</option>
-                        <option value="d/m/Y">14/06/2026 (d/m/Y)</option>
-                        <option value="m/d/Y">06/14/2026 (m/d/Y)</option>
-                        <option value="j F Y">14 June 2026 (j F Y)</option>
-                    </select>
-                </div>
-
-                <!-- Quick Actions Center/Align Buttons -->
-                <div class="form-group" style="padding-top: 15px; border-top: 1px solid #eaedf1;">
-                    <label style="font-weight: bold; margin-bottom: 8px;">Quick Actions</label>
-                    <div style="display: flex; gap: 8px;">
-                        <button type="button" id="btn_center_x" class="btn btn-sm" style="flex: 1; padding: 8px; font-size: 12px; font-weight: bold; text-align: center;">Center Horizontally</button>
-                        <button type="button" id="btn_center_y" class="btn btn-sm" style="flex: 1; padding: 8px; font-size: 12px; font-weight: bold; text-align: center;">Center Vertically</button>
+                    <!-- Grid & Snap Toggle UI -->
+                    <div style="padding: 12px; background: #eaedf1; border-radius: 8px; display: flex; flex-direction: column; gap: 10px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="toggle_grid" style="width: auto; height: 16px; cursor: pointer;"> 
+                            <label for="toggle_grid" style="margin-bottom: 0; font-size: 12px; font-weight: 600; cursor: pointer; color: #1e293b;">Show Canvas Grid</label>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label for="snap_interval" style="margin-bottom: 0; font-size: 12px; font-weight: 600; color: #1e293b;">Snap to:</label>
+                            <select id="snap_interval" style="padding: 4px 8px; font-weight: 600; border-radius: 4px; background: white; border: 1.5px solid #cbd5e1; height: auto; cursor: pointer; font-size: 12px;">
+                                <option value="0">None</option>
+                                <option value="0.1">0.1mm</option>
+                                <option value="0.5">0.5mm</option>
+                                <option value="1">1mm</option>
+                                <option value="2">2mm</option>
+                                <option value="5" selected>5mm</option>
+                                <option value="10">10mm</option>
+                                <option value="custom">Custom...</option>
+                            </select>
+                            <input type="number" id="snap_custom_val" step="any" min="0.05" value="0.5" disabled style="display: none; width: 60px; padding: 3px 6px; border-radius: 4px; border: 1.5px solid #cbd5e1; font-weight: bold; background: white; font-size: 12px;">
+                        </div>
                     </div>
                 </div>
 
@@ -585,9 +852,9 @@ if (is_dir($fontDir)) {
                 <input type="file" name="font_file_qrcode" id="real_file_qrcode" style="display:none" accept=".ttf">
                 <input type="file" name="font_file_custom_text" id="real_file_custom_text" style="display:none" accept=".ttf">
 
-                <button type="submit" class="btn btn-green" style="width: 100%; margin-top: 15px;">Save All Layouts</button>
+                <button type="submit" class="btn btn-green" style="width: 100%; margin-top: 15px; padding: 10px; font-size: 13px; font-weight: bold; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">Save All Layouts</button>
             </form>
-        </div>
+        </div></div>
     </div>
 
     <!-- Live PDF Preview Modal -->
@@ -676,6 +943,10 @@ if (is_dir($fontDir)) {
 
         // State
         const settings = <?= json_encode($visualSettings) ?>;
+        // Custom per-event brand color presets (issue #90). The auto-extracted template
+        // palette needs no JS state — it's rendered server-side as plain .swatch elements
+        // and picked up by the existing generic swatch click handler below.
+        let colorPresets = <?= json_encode($colorPresets) ?>;
         let activeTab = 'name';
         
         // Locked states for Canva/Figma element locking
@@ -738,7 +1009,19 @@ if (is_dir($fontDir)) {
         // Listen for snap interval changes to update the grid and guides
         document.getElementById('snap_interval').addEventListener('change', function() {
             const isCustom = this.value === 'custom';
-            document.getElementById('snap_custom_val').style.display = isCustom ? 'inline-block' : 'none';
+            const customInput = document.getElementById('snap_custom_val');
+            customInput.style.display = isCustom ? 'inline-block' : 'none';
+            // #snap_custom_val has no name attribute and is never submitted —
+            // it's only ever read via getSnapInterval() — but its min="0.05"
+            // still makes it a candidate for native form validation while
+            // visible. Disabling it whenever it's hidden means a leftover
+            // out-of-range custom value (e.g. switching back to a preset
+            // after typing 0.01) can't silently block Save All Layouts the
+            // same way the always-invalid default did in #124/#126:
+            // disabled controls are skipped by checkValidity(). Reading
+            // .value from JS still works on a disabled input, so
+            // getSnapInterval() is unaffected while "Custom..." is selected.
+            customInput.disabled = !isCustom;
             updateGridOverlay();
             updateElementGuides();
         });
@@ -812,6 +1095,15 @@ if (is_dir($fontDir)) {
             const isLocked = lockedStates[activeTab];
             frame.classList.toggle('locked', isLocked);
             badge.style.display = isLocked ? 'block' : 'none';
+
+            const handleMr = document.getElementById('handle_resize_r');
+            if (handleMr) {
+                if (activeTab === 'qrcode' || isLocked) {
+                    handleMr.style.display = 'none';
+                } else {
+                    handleMr.style.display = 'flex';
+                }
+            }
         }
 
         // Draw and update measurement lines from active element to canvas margins
@@ -1284,7 +1576,34 @@ if (is_dir($fontDir)) {
                 let pxWidth = (boxWidthMM / pdfWidthMM) * canvas.offsetWidth;
                 el.style.width = pxWidth + 'px';
                 el.style.whiteSpace = 'normal';
-                
+
+                // Base font size in canvas pixels
+                let baseFontSizePx = (s.font_size / docHeightPt) * canvas.offsetHeight;
+
+                if (s.wrap_mode === 'shrink') {
+                    let textContent = el.innerText || '';
+                    let tempSpan = document.createElement('span');
+                    tempSpan.style.visibility = 'hidden';
+                    tempSpan.style.position = 'absolute';
+                    tempSpan.style.fontFamily = el.style.fontFamily || 'sans-serif';
+                    tempSpan.style.fontSize = baseFontSizePx + 'px';
+                    tempSpan.style.whiteSpace = 'nowrap';
+                    tempSpan.innerText = textContent;
+                    document.body.appendChild(tempSpan);
+                    let measuredWidth = tempSpan.offsetWidth;
+                    document.body.removeChild(tempSpan);
+
+                    if (measuredWidth > pxWidth && pxWidth > 0) {
+                        let scale = (pxWidth / measuredWidth) * 0.97;
+                        let effectiveFontSizePx = Math.max(baseFontSizePx * 0.5, baseFontSizePx * scale);
+                        el.style.fontSize = effectiveFontSizePx + 'px';
+                    } else {
+                        el.style.fontSize = baseFontSizePx + 'px';
+                    }
+                } else {
+                    el.style.fontSize = baseFontSizePx + 'px';
+                }
+
                 // If bounding box is used, X/Y is ALWAYS the top-left corner of the box,
                 // and CSS textAlign handles the text alignment natively inside it.
                 el.style.textAlign = s.text_align === 'C' ? 'center' : (s.text_align === 'R' ? 'right' : 'left');
@@ -1389,6 +1708,7 @@ if (is_dir($fontDir)) {
             if (activeTab === 'name' || activeTab === 'certid' || activeTab === 'custom_text') {
                 document.getElementById('sample_text_group').style.display = 'block';
                 formInputs.sample_text.value = document.getElementById('el_' + activeTab).innerText;
+                updateSampleChips(activeTab);
             } else {
                 document.getElementById('sample_text_group').style.display = 'none';
             }
@@ -1413,6 +1733,10 @@ if (is_dir($fontDir)) {
                 document.getElementById('font_upload_group').style.display = 'block';
                 document.getElementById('group_box_width').style.display = 'block';
                 formInputs.box_width.value = s.box_width || 0;
+                
+                const boxW = parseFloat(s.box_width) || 0;
+                const badge = document.getElementById('box_width_mode_badge');
+                if (badge) badge.innerText = boxW > 0 ? `${boxW}mm (Wrapping)` : '0 = Auto';
             }
             
             // Clear proxy input
@@ -1437,6 +1761,54 @@ if (is_dir($fontDir)) {
             updateElementGuides();
         }
 
+        // Dynamic Sample Text Variant Chips
+        function updateSampleChips(tabKey) {
+            const chipsContainer = document.getElementById('sample_text_chips');
+            if (!chipsContainer) return;
+            
+            let chips = [];
+            if (tabKey === 'custom_text') {
+                chips = [
+                    { label: 'Short Date', text: '16 January 2026 to 30 June 2026.' },
+                    { label: 'Long Date (2-Lines)', text: '01 January 2025 to 31 December 2026.' },
+                    { label: 'Detailed Text', text: 'Completed the DCW Graphic Design Internship from 01 Jan 2025 to 31 Dec 2026.' },
+                    { label: 'Default', text: 'Participant\'s Custom Text' }
+                ];
+            } else if (tabKey === 'name') {
+                chips = [
+                    { label: 'Short Name', text: 'Ali Smith' },
+                    { label: 'Medium Name', text: 'Muhammad Abdullah' },
+                    { label: 'Long Name', text: 'Prof. Dr. Mohammad Abdul Rahman Al-Qasimi' },
+                    { label: 'Default', text: 'Participant Name' }
+                ];
+            } else if (tabKey === 'certid') {
+                chips = [
+                    { label: 'Standard ID', text: 'DCW26-K9X4M7' },
+                    { label: 'Long ID', text: 'DCW-GRAPHIC-2026-X89Y12' },
+                    { label: 'Default', text: 'CERT-1A2B3C4D' }
+                ];
+            }
+            
+            chipsContainer.innerHTML = '';
+            chips.forEach(c => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'variant-chip';
+                btn.textContent = c.label;
+                btn.title = c.text;
+                btn.addEventListener('click', () => {
+                    formInputs.sample_text.value = c.text;
+                    const el = document.getElementById('el_' + activeTab);
+                    if (el) {
+                        el.innerText = c.text;
+                        applyStyleToElement(activeTab);
+                        updateElementGuides();
+                    }
+                });
+                chipsContainer.appendChild(btn);
+            });
+        }
+
         // Per-element default font names (used when reverting to Default Font)
         const elementDefaultFonts = {
             name: 'alexbrush',
@@ -1459,6 +1831,9 @@ if (is_dir($fontDir)) {
             s.font_name = selectedFontFile ? 'custom' : (elementDefaultFonts[activeTab] || 'helvetica');
             if (activeTab !== 'qrcode') {
                 s.box_width = parseFloat(formInputs.box_width.value) || 0;
+                const boxW = s.box_width;
+                const badge = document.getElementById('box_width_mode_badge');
+                if (badge) badge.innerText = boxW > 0 ? `${boxW}mm (Wrapping)` : '0 = Auto';
             }
             if (activeTab === 'date') {
                 s.date_format = formInputs.date_format.value;
@@ -1505,7 +1880,8 @@ if (is_dir($fontDir)) {
             });
         });
 
-        // Preset Color Swatches click events
+        // Preset Color Swatches click events (covers the static presets AND the
+        // server-rendered auto-extracted template palette, both plain .swatch elements).
         document.querySelectorAll('.swatch').forEach(swatch => {
             swatch.addEventListener('click', () => {
                 const hex = swatch.dataset.color;
@@ -1520,6 +1896,68 @@ if (is_dir($fontDir)) {
             });
         });
 
+        // ===== Custom brand color presets (issue #90) =====
+        // Apply a #RRGGBB color to the active element, mirroring the built-in swatch behaviour.
+        function applyPresetColor(hex) {
+            formInputs.color_picker.value = hex;
+            const r = parseInt(hex.substr(1, 2), 16);
+            const g = parseInt(hex.substr(3, 2), 16);
+            const b = parseInt(hex.substr(5, 2), 16);
+            formInputs.text_color.value = `${r},${g},${b}`;
+            syncColorUI(formInputs.text_color.value);
+            syncState();
+            pushState();
+        }
+        function renderCustomPresets() {
+            const box = document.getElementById('custom_swatches');
+            if (!box) return;
+            box.innerHTML = '';
+            if (!colorPresets.length) {
+                const none = document.createElement('span');
+                none.style.fontSize = '10px';
+                none.style.color = '#cbd5e1';
+                none.textContent = <?= json_encode(__('admin.editor.color.none-yet')) ?>;
+                box.appendChild(none);
+            }
+            colorPresets.forEach(hex => {
+                const sw = document.createElement('div');
+                sw.className = 'swatch';
+                sw.style.background = hex;
+                sw.title = hex;
+                sw.dataset.color = hex;
+                sw.addEventListener('click', () => applyPresetColor(hex));
+                sw.addEventListener('contextmenu', (e) => { e.preventDefault(); removePreset(hex); });
+                // Long-press removal for touch devices (no right-click).
+                let lpTimer = null;
+                sw.addEventListener('touchstart', () => { lpTimer = setTimeout(() => removePreset(hex), 600); }, { passive: true });
+                sw.addEventListener('touchend', () => clearTimeout(lpTimer));
+                sw.addEventListener('touchmove', () => clearTimeout(lpTimer));
+                box.appendChild(sw);
+            });
+            syncPresetPayload();
+        }
+        function addCurrentAsPreset() {
+            const hex = parseColorToHex(formInputs.text_color.value || '0,0,0').toUpperCase();
+            if (!/^#[0-9A-F]{6}$/.test(hex)) return;
+            if (colorPresets.includes(hex)) return;      // no duplicates
+            if (colorPresets.length >= 12) colorPresets.shift(); // cap at 12, drop oldest
+            colorPresets.push(hex);
+            renderCustomPresets();
+        }
+        function removePreset(hex) {
+            colorPresets = colorPresets.filter(c => c !== hex);
+            renderCustomPresets();
+        }
+        function syncPresetPayload() {
+            const inp = document.getElementById('color_presets_payload');
+            if (inp) inp.value = JSON.stringify(colorPresets);
+        }
+        (function () {
+            const btn = document.getElementById('add_preset_btn');
+            if (btn) btn.addEventListener('click', addCurrentAsPreset);
+            renderCustomPresets();
+        })();
+
         // ===== Custom cross-platform colour picker wiring (issue #92) =====
         // syncColorUI reflects a colour value onto the preview, hex readout and the H/S/L
         // sliders. It never touches text_color/settings, so it is safe to call from any
@@ -1531,8 +1969,10 @@ if (is_dir($fontDir)) {
             const hex = rgbToHex(r, g, b);
             const prev = document.getElementById('color_preview');
             const read = document.getElementById('color_hex_readout');
+            const indicator = document.getElementById('color_swatch_indicator');
             if (prev) prev.style.background = hex;
             if (read) read.textContent = hex;
+            if (indicator) indicator.style.background = hex;
             const [h, s, l] = rgbToHsl(r, g, b);
             const hEl = document.getElementById('cc_hue'), sEl = document.getElementById('cc_sat'), lEl = document.getElementById('cc_light');
             if (hEl) hEl.value = Math.round(h);
@@ -1551,8 +1991,10 @@ if (is_dir($fontDir)) {
             formInputs.color_picker.value = hex;
             const prev = document.getElementById('color_preview');
             const read = document.getElementById('color_hex_readout');
+            const indicator = document.getElementById('color_swatch_indicator');
             if (prev) prev.style.background = hex;
             if (read) read.textContent = hex;
+            if (indicator) indicator.style.background = hex;
             syncState();
         }
         ['cc_hue', 'cc_sat', 'cc_light'].forEach(id => {
@@ -1578,6 +2020,50 @@ if (is_dir($fontDir)) {
                 } catch (e) { /* user cancelled the eyedropper */ }
             });
         })();
+
+        // ===== Inspector Mode Tabs & Collapsible Color UI (issue #118) =====
+        document.querySelectorAll('.inspector-tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = btn.dataset.tab;
+                document.querySelectorAll('.inspector-tab-btn').forEach(b => {
+                    b.classList.toggle('active', b === btn);
+                    b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
+                });
+                const propTab = document.getElementById('inspector_tab_properties');
+                const layersTab = document.getElementById('inspector_tab_layers');
+                if (propTab) {
+                    propTab.classList.toggle('active', target === 'properties');
+                    propTab.style.display = (target === 'properties' ? 'block' : 'none');
+                }
+                if (layersTab) {
+                    layersTab.classList.toggle('active', target === 'layers');
+                    layersTab.style.display = (target === 'layers' ? 'block' : 'none');
+                }
+            });
+        });
+
+        (function () {
+            const toggleBtn = document.getElementById('toggle_custom_color_btn');
+            const colorUI = document.getElementById('custom_color_ui');
+            const arrow = document.getElementById('custom_color_arrow');
+            if (toggleBtn && colorUI) {
+                toggleBtn.addEventListener('click', () => {
+                    const isOpen = colorUI.classList.toggle('open');
+                    if (arrow) arrow.textContent = isOpen ? '▴' : '▾';
+                });
+            }
+        })();
+
+        // Max Width Preset Buttons click events
+        document.querySelectorAll('.width-preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const w = parseFloat(btn.dataset.width) || 0;
+                formInputs.box_width.value = w;
+                settings[activeTab].box_width = w;
+                syncState();
+                pushState();
+            });
+        });
 
         // Proxy file input to real file inputs
         formInputs.file_proxy.addEventListener('change', (e) => {
@@ -1718,6 +2204,93 @@ if (is_dir($fontDir)) {
         document.addEventListener('touchend', endDrag);
         document.addEventListener('touchcancel', endDrag);
 
+        // Interactive Bounding Box Width Resizing (East Handle)
+        let isResizing = false;
+        let resizeStartX = 0;
+        let resizeStartWidthMM = 0;
+
+        const handleResizeR = document.getElementById('handle_resize_r');
+
+        function startResize(e) {
+            if (lockedStates[activeTab] === true || activeTab === 'qrcode') return;
+            
+            e.stopPropagation();
+            e.preventDefault();
+            
+            isResizing = true;
+            resizeStartX = e.clientX !== undefined ? e.clientX : (e.touches ? e.touches[0].clientX : 0);
+            
+            const s = settings[activeTab];
+            const el = document.getElementById('el_' + activeTab);
+            
+            if (parseFloat(s.box_width) > 0) {
+                resizeStartWidthMM = parseFloat(s.box_width);
+            } else {
+                resizeStartWidthMM = (el.offsetWidth / canvas.offsetWidth) * pdfWidthMM;
+            }
+            
+            document.body.style.cursor = 'ew-resize';
+        }
+
+        if (handleResizeR) {
+            handleResizeR.addEventListener('mousedown', startResize);
+            handleResizeR.addEventListener('touchstart', startResize, { passive: false });
+        }
+
+        function performResize(e) {
+            if (!isResizing) return;
+            
+            const currentX = e.clientX !== undefined ? e.clientX : (e.touches ? e.touches[0].clientX : undefined);
+            if (currentX === undefined) return;
+            
+            if (e.type === 'touchmove') e.preventDefault();
+            
+            const deltaXPx = currentX - resizeStartX;
+            const deltaXMM = (deltaXPx / canvas.offsetWidth) * pdfWidthMM;
+            
+            let newWidthMM = Math.max(10, Math.round(resizeStartWidthMM + deltaXMM));
+            
+            const snap = getSnapInterval();
+            if (snap > 0) {
+                newWidthMM = Math.max(snap, Math.round(newWidthMM / snap) * snap);
+            }
+            
+            settings[activeTab].box_width = newWidthMM;
+            formInputs.box_width.value = newWidthMM;
+            
+            applyStyleToElement(activeTab);
+            updateElementGuides();
+            
+            const badge = document.getElementById('box_width_mode_badge');
+            if (badge) badge.innerText = `${newWidthMM}mm (Wrapping)`;
+            
+            const tooltip = document.getElementById('drag-tooltip');
+            const el = document.getElementById('el_' + activeTab);
+            if (tooltip && el) {
+                tooltip.textContent = `Max Width: ${newWidthMM}mm (Wrap)`;
+                tooltip.style.left = (el.offsetLeft + el.offsetWidth / 2) + 'px';
+                tooltip.style.top = (el.offsetTop - 28) + 'px';
+                tooltip.style.display = 'block';
+            }
+        }
+
+        document.addEventListener('mousemove', performResize);
+        document.addEventListener('touchmove', performResize, { passive: false });
+
+        function endResize() {
+            if (isResizing) {
+                isResizing = false;
+                document.body.style.cursor = 'default';
+                const tooltip = document.getElementById('drag-tooltip');
+                if (tooltip) tooltip.style.display = 'none';
+                pushState();
+            }
+        }
+
+        document.addEventListener('mouseup', endResize);
+        document.addEventListener('touchend', endResize);
+        document.addEventListener('touchcancel', endResize);
+
         // Zoom & Rotate & Fit
         document.getElementById('tool_zoom_in').addEventListener('click', () => {
             currentScale += 0.25;
@@ -1750,6 +2323,7 @@ if (is_dir($fontDir)) {
         // Form submission
         document.getElementById('settings-form').addEventListener('submit', () => {
             document.getElementById('visual_settings_payload').value = JSON.stringify(settings);
+            syncPresetPayload(); // ensure custom brand presets (issue #90) are submitted
         });
 
         // Initial Load
